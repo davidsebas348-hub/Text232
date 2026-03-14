@@ -1,85 +1,183 @@
--- ===== SERVICES =====
+--------------------------------------------------
+-- TOGGLE
+--------------------------------------------------
+if getgenv().AUTO_SPACE then
+	getgenv().AUTO_SPACE = false
+
+	if getgenv().AUTO_SPACE_CONNS then
+		for _,c in pairs(getgenv().AUTO_SPACE_CONNS) do
+			pcall(function()
+				c:Disconnect()
+			end)
+		end
+	end
+
+	getgenv().AUTO_SPACE_CONNS = {}
+	return
+end
+
+getgenv().AUTO_SPACE = true
+getgenv().AUTO_SPACE_CONNS = {}
+--------------------------------------------------
+
 local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local RunService = game:GetService("RunService")
-
--- ===== TOGGLE =====
-if _G.AUTO_JUMP_CLICK then
-    -- Si ya está activo, desactivar
-    _G.AUTO_JUMP_CLICK = false
-    return
-end
-_G.AUTO_JUMP_CLICK = true
-
--- ===== PLAYER =====
 local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
-local LocalPlayer = player
+local live = workspace:WaitForChild("Live")
 
--- CONFIGURACIÓN DEL CLICK
-local OFFSET_X = 15       -- mover a la derecha
-local OFFSET_Y = 30       -- mover hacia abajo
-local CLICK_DURATION = 0.05 -- tiempo que mantiene presionado el click
+local spaceHeld = false
+local releaseTask
+local toolDisabled = false
 
--- Buscar JumpButton
-local function getJumpButton()
-    return playerGui:FindFirstChild("JumpButton", true)
+local function firePress()
+
+	if spaceHeld then return end
+	spaceHeld = true
+
+	local args = {
+		[1] = {
+			["Goal"] = "KeyPress",
+			["Key"] = Enum.KeyCode.Space
+		}
+	}
+
+	player.Character:WaitForChild("Communicate"):FireServer(unpack(args))
 end
 
--- Función para simular click
-local function clickButton(button)
-    if not button then return end
-    local absPos = button.AbsolutePosition
-    local absSize = button.AbsoluteSize
+local function fireRelease()
 
-    local x = absPos.X + absSize.X / 2 + OFFSET_X
-    local y = absPos.Y + absSize.Y / 2 + OFFSET_Y
+	if not spaceHeld then return end
+	spaceHeld = false
 
-    -- PRESIONAR
-    VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
-    task.wait(CLICK_DURATION)
-    -- SOLTAR
-    VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+	local args = {
+		[1] = {
+			["Goal"] = "KeyRelease",
+			["Key"] = Enum.KeyCode.Space
+		}
+	}
+
+	player.Character:WaitForChild("Communicate"):FireServer(unpack(args))
 end
 
--- Obtener el modelo del jugador en Workspace.Live
-local function getMyModel()
-    local liveFolder = Workspace:FindFirstChild("Live")
-    if not liveFolder then return nil end
-    return liveFolder:FindFirstChild(LocalPlayer.Name)
+local function setup()
+
+	if not getgenv().AUTO_SPACE then return end
+
+	local model = live:WaitForChild(player.Name)
+	local char = player.Character
+
+	while model:GetAttribute("Combo") == nil do
+		model:GetAttributeChangedSignal("Combo"):Wait()
+	end
+
+	--------------------------------------------------
+	-- COMBO DETECTION
+	--------------------------------------------------
+
+	table.insert(getgenv().AUTO_SPACE_CONNS,
+		model:GetAttributeChangedSignal("Combo"):Connect(function()
+
+			if not getgenv().AUTO_SPACE then return end
+			if toolDisabled then return end
+
+			local combo = model:GetAttribute("Combo")
+			local m1ing = model:FindFirstChild("M1ing")
+
+			if combo == 1 and m1ing then
+
+				if releaseTask then
+					task.cancel(releaseTask)
+					releaseTask = nil
+				end
+
+				firePress()
+
+			end
+		end)
+	)
+
+	--------------------------------------------------
+	-- M1ing REMOVED
+	--------------------------------------------------
+
+	table.insert(getgenv().AUTO_SPACE_CONNS,
+		model.ChildRemoved:Connect(function(child)
+
+			if child.Name ~= "M1ing" then return end
+			if not getgenv().AUTO_SPACE then return end
+
+			releaseTask = task.delay(1,function()
+
+				if not model:FindFirstChild("M1ing") then
+					fireRelease()
+				end
+
+			end)
+
+		end)
+	)
+
+	--------------------------------------------------
+	-- M1ing ADDED
+	--------------------------------------------------
+
+	table.insert(getgenv().AUTO_SPACE_CONNS,
+		model.ChildAdded:Connect(function(child)
+
+			if child.Name ~= "M1ing" then return end
+			if not getgenv().AUTO_SPACE then return end
+
+			toolDisabled = false
+
+			if releaseTask then
+				task.cancel(releaseTask)
+				releaseTask = nil
+			end
+
+			firePress()
+
+		end)
+	)
+
+	--------------------------------------------------
+	-- TOOL DETECTION
+	--------------------------------------------------
+
+	table.insert(getgenv().AUTO_SPACE_CONNS,
+		char.ChildAdded:Connect(function(child)
+
+			if not child:IsA("Tool") then return end
+
+			local combo = model:GetAttribute("Combo")
+
+			if child.Name == "Consecutive Punches" then
+
+				if releaseTask then
+					task.cancel(releaseTask)
+					releaseTask = nil
+				end
+
+				firePress()
+				return
+			end
+
+			-- SOLO desactiva si combo es 1
+			if combo == 1 then
+				toolDisabled = true
+				fireRelease()
+			end
+
+		end)
+	)
+
 end
 
--- Tabla para controlar hits existentes
-local recentHits = {}
+table.insert(getgenv().AUTO_SPACE_CONNS,
+	player.CharacterAdded:Connect(function()
+		task.wait(1)
+		setup()
+	end)
+)
 
--- Función para actualizar hits y hacer click por cada nuevo
-local function updateHits()
-    if not _G.AUTO_JUMP_CLICK then return end -- detener si toggle es false
-
-    local myModel = getMyModel()
-    if not myModel then
-        recentHits = {}
-        return
-    end
-
-    for _, child in ipairs(myModel:GetChildren()) do
-        if child.Name == "RecentM1Hit" and not recentHits[child] then
-            recentHits[child] = true
-            -- ¡Nuevo hit detectado! Ejecutar click
-            clickButton(getJumpButton())
-        end
-    end
-
-    -- Limpiar hits que desaparecieron
-    for hit,_ in pairs(recentHits) do
-        if not hit.Parent then
-            recentHits[hit] = nil
-        end
-    end
+if player.Character then
+	setup()
 end
-
--- Conexión a Heartbeat para detectar hits cada frame
-RunService.Heartbeat:Connect(function()
-    updateHits()
-end)
